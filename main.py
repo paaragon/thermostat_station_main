@@ -1,4 +1,4 @@
-from machine import Pin, unique_id
+from machine import Pin, unique_id, reset
 import config
 from wifi import Wifi
 from dht11 import DHT11
@@ -101,8 +101,12 @@ def set_temp(read_info):
 def set_mode(m):
     global mode
     global publish_mode_topic
+    global lcd_display_latest_on
     mode = m
     mqtt_client.publish(publish_mode_topic, mode)
+    evaluate_temp()
+    lcd_display.turn_on()
+    lcd_display_latest_on = time.time()
     evaluate_temp()
     print_info_text()
 
@@ -123,6 +127,7 @@ def subscription_callback(topic, msg):
         client_id = topic_tokens[2]
     print(operation)
     if operation == "set" and client_id != local_client_id:
+        lcd_display.turn_on()
         mqtt_set_temp(msg)
         return
     print((operation, client_id, local_client_id, mode))
@@ -203,52 +208,55 @@ publish_mode_topic = config.MQTT_TOPIC_PREFIX + "/mode"
 mqtt_client.publish(publish_mode_topic, mode)
 evaluate_temp()
 while True:
+    try:
+        mqtt_client.check_msg()
+        # turn off lcd_display
+        if time.time() - lcd_display_latest_on > config.LCD_DISPLAY_ON_DURATION_SEC:
+            lcd_display.turn_off()
 
-    mqtt_client.check_msg()
-    # turn off lcd_display
-    if time.time() - lcd_display_latest_on > config.LCD_DISPLAY_ON_DURATION_SEC:
-        lcd_display.turn_off()
+        # read the local sensor
+        if time.time() - sensor_latest_read > config.SENSOR_READ_DELAY_SEC:
+            sensor_latest_read = time.time()
+            result = dht_sensor.read()
+            if result["temp"] is not None:
+                mqtt_client.publish(publish_read_topic, str(result))
+                if mode == "L":
+                    set_temp(result)
 
-    # read the local sensor
-    if time.time() - sensor_latest_read > config.SENSOR_READ_DELAY_SEC:
-        sensor_latest_read = time.time()
-        result = dht_sensor.read()
-        if result["temp"] is not None:
-            mqtt_client.publish(publish_read_topic, str(result))
+        # increase setted_temp
+        if button_1.state() == "DOWN":
+            print("btn_1 down")
+            setted_temp += 1
+            evaluate_temp()
+            lcd_display.turn_on()
+            lcd_display_latest_on = time.time()
+            print_info_text()
+            mqtt_client.publish(publish_set_topic, str(setted_temp))
+
+        # decrease setted_temp
+        if button_2.state() == "DOWN":
+            setted_temp -= 1
+            evaluate_temp()
+            lcd_display.turn_on()
+            lcd_display_latest_on = time.time()
+            print_info_text()
+            mqtt_client.publish(publish_set_topic, str(setted_temp))
+
+        # turn on lcd_display
+        if button_3.state() == "DOWN":
+            lcd_display.turn_on()
+            lcd_display_latest_on = time.time()
+
+        # change to remote/local mode
+        if button_4.state() == "DOWN":
             if mode == "L":
-                set_temp(result)
-
-    # increase setted_temp
-    if button_1.state() == "DOWN":
-        print("btn_1 down")
-        setted_temp += 1
-        evaluate_temp()
-        lcd_display.turn_on()
-        lcd_display_latest_on = time.time()
-        print_info_text()
-        mqtt_client.publish(publish_set_topic, str(setted_temp))
-
-    # decrease setted_temp
-    if button_2.state() == "DOWN":
-        setted_temp -= 1
-        evaluate_temp()
-        lcd_display.turn_on()
-        lcd_display_latest_on = time.time()
-        print_info_text()
-        mqtt_client.publish(publish_set_topic, str(setted_temp))
-
-    # turn on lcd_display
-    if button_3.state() == "DOWN":
-        lcd_display.turn_on()
-        lcd_display_latest_on = time.time()
-
-    # change to remote/local mode
-    if button_4.state() == "DOWN":
-        if mode == "L":
-            mode = "R"
-        else:
-            mode = "L"
-        mqtt_client.publish(publish_mode_topic, mode)
-        lcd_display.turn_on()
-        lcd_display_latest_on = time.time()
-        print_info_text()
+                mode = "R"
+            else:
+                mode = "L"
+            mqtt_client.publish(publish_mode_topic, mode)
+            lcd_display.turn_on()
+            lcd_display_latest_on = time.time()
+            print_info_text()
+    except Exception as e:
+        print(str(e))
+        reset()
